@@ -1,0 +1,214 @@
+body.dark-theme {
+    background-color: #1a1a1a;
+    color: #ffffff;
+    min-height: 100vh;
+}
+
+.navbar {
+    background-color: #2d2d2d;
+}
+
+.feature-card {
+    background-color: #2d2d2d;
+    border: none;
+    color: white;
+    transition: transform 0.3s;
+    cursor: pointer;
+    height: 200px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.feature-card:hover {
+    transform: translateY(-5px);
+}
+
+.geometric-shape {
+    width: 60px;
+    height: 60px;
+    margin: 0 auto;
+}
+
+.triangle {
+    width: 0;
+    height: 0;
+    border-left: 30px solid transparent;
+    border-right: 30px solid transparent;
+    border-bottom: 60px solid #007bff;
+}
+
+.circle {
+    background-color: #28a745;
+    border-radius: 50%;
+}
+
+.square {
+    background-color: #dc3545;
+}
+
+#loginSection {
+    display: flex;
+    align-items: center;
+}
+
+#loginSection input {
+    width: 150px;
+    background-color: #3d3d3d;
+    border: 1px solid #4d4d4d;
+    color: white;
+}
+
+.btn-primary {
+    background-color: #007bff;
+    border: none;
+}
+
+.btn-primary:hover {
+    background-color: #0056b3;
+}
+
+/* 模擬作題頁面樣式 */
+.exam-container {
+    height: 100vh;
+    padding: 20px;
+    background-color: #1a1a1a;
+}
+
+.exam-main {
+    display: flex;
+    height: 100%;
+    background-color: #2d2d2d;
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.exam-content {
+    flex: 1;
+    padding: 20px;
+    overflow-y: auto;
+}
+
+.exam-controls {
+    width: 200px;
+    padding: 20px;
+    background-color: #3d3d3d;
+}
+
+.question-section {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+#questionContent {
+    font-size: 1.1em;
+    line-height: 1.6;
+}
+
+.options-container {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.options-container button {
+    text-align: left;
+    white-space: normal;
+    height: auto;
+    padding: 10px 15px;
+    background-color: #3d3d3d;
+    border: 1px solid #4d4d4d;
+    color: white;
+    transition: all 0.2s;
+}
+
+.options-container button:hover {
+    background-color: #4d4d4d;
+}
+
+.options-container button.selected {
+    background-color: #007bff;
+    border-color: #0056b3;
+}
+
+/* 圖片容器樣式 */
+.image-container {
+    margin-top: 20px;
+    text-align: center;
+    background-color: #2d2d2d;
+    padding: 10px;
+    border-radius: 8px;
+}
+
+.image-container img {
+    max-width: 100%;
+    height: auto;
+    border-radius: 4px;
+    margin: 0 auto;
+}
+
+/* 選項容器樣式 */
+.options-container {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.option-btn {
+    width: 100%;
+    text-align: left;
+    padding: 10px 15px;
+    background-color: #3d3d3d;
+    border: none;
+    color: white;
+    border-radius: 4px;
+    transition: background-color 0.2s;
+}
+
+.option-btn:hover {
+    background-color: #4d4d4d;
+}
+
+.option-btn.selected {
+    background-color: #007bff;
+}
+
+/* 把握度按鈕樣式 */
+.confidence-btn {
+    width: 100%;
+    margin-bottom: 10px;
+    padding: 10px;
+    border: none;
+    border-radius: 4px;
+    color: white;
+    transition: opacity 0.2s;
+}
+
+.confidence-btn:hover {
+    opacity: 0.9;
+}
+
+.confidence-high {
+    background-color: #28a745;
+}
+
+.confidence-medium {
+    background-color: #ffc107;
+    color: #000;
+}
+
+.confidence-low {
+    background-color: #dc3545;
+}
+
+.confidence-btn.selected {
+    box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.3);
+}
+
+/* 選擇題號下拉選單樣式 */
+#questionSelector {
+    background-color: #3d3d3d;
+    color: white;
+    border-color: #4d4d4d;
+}
