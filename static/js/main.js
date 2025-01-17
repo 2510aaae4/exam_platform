@@ -151,20 +151,35 @@ function showQuestion() {
     
     // 顯示圖片
     const imageContainer = document.getElementById('questionImage');
+    imageContainer.innerHTML = ''; // 清空容器
+    
     if (question.image) {
-        console.log('Loading image:', question.image);
+        console.log('Question has image:', question.image);
         const img = document.createElement('img');
         img.src = question.image;
-        img.alt = '題目圖片';
-        img.onerror = function() {
-            console.error('Failed to load image:', this.src);
-            this.style.display = 'none';
-            imageContainer.innerHTML = '<div class="text-center text-muted">圖片載入失敗</div>';
+        img.alt = `第 ${question.number} 題圖片`;
+        img.className = 'img-fluid'; // 使圖片響應式
+        
+        // 添加載入事件處理
+        img.onload = function() {
+            console.log('Image loaded successfully:', question.image);
+            imageContainer.style.display = 'block';
         };
-        imageContainer.innerHTML = '';
+        
+        img.onerror = function() {
+            console.error('Failed to load image:', question.image);
+            this.style.display = 'none';
+            imageContainer.innerHTML = `
+                <div class="alert alert-warning">
+                    圖片載入失敗 (${question.number}.png)
+                    <br>
+                    路徑: ${question.image}
+                </div>`;
+        };
+        
         imageContainer.appendChild(img);
-        imageContainer.style.display = 'block';
     } else {
+        console.log('No image for question:', question.number);
         imageContainer.style.display = 'none';
     }
     

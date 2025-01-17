@@ -3,28 +3,17 @@ from flask_sqlalchemy import SQLAlchemy
 import os
 import json
 from datetime import datetime
+from functools import wraps
+import traceback
 from config import Config
-from applicationinsights.flask.ext import AppInsights
-from azure.storage.blob import BlobServiceClient
 
 app = Flask(__name__)
-
-# 配置資料庫
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'your-secret-key')
-app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///exam.db')
-if app.config['SQLALCHEMY_DATABASE_URI'].startswith('postgres://'):
-    app.config['SQLALCHEMY_DATABASE_URI'] = app.config['SQLALCHEMY_DATABASE_URI'].replace('postgres://', 'postgresql://', 1)
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-
-# 初始化 Application Insights
-appinsights = AppInsights(app)
+app.config.from_object(Config)
 
 # 初始化 SQL Database
 db = SQLAlchemy(app)
 
-# 初始化 Blob Storage
-blob_service_client = BlobServiceClient.from_connection_string(app.config['AZURE_STORAGE_CONNECTION_STRING'])
-container_client = blob_service_client.get_container_client(app.config['AZURE_CONTAINER_NAME'])
+
 
 # 数据库模型
 class User(db.Model):
@@ -124,6 +113,7 @@ def load_exam_content(exam_id):
         part = exam_id.split('_')[1]
         
         base_dir = os.path.dirname(__file__)
+        print(f"Base directory: {base_dir}")
         
         # 讀取題目文件
         questions_file = os.path.join(base_dir, 'questions', year, f'{year}_{part}.md')
@@ -173,6 +163,16 @@ def load_exam_content(exam_id):
                     'options': [],
                     'image': None
                 }
+                # 檢查是否有對應的圖片
+                image_path = os.path.join(base_dir, 'questions', year, 'image', f"{question_number}.png")
+                print(f"Checking for image: {image_path}")
+                if os.path.exists(image_path):
+                    relative_path = os.path.join(year, 'image', f"{question_number}.png")
+                    image_url = url_for('serve_questions', filename=relative_path, _external=True)
+                    current_question['image'] = image_url
+                    print(f"Found image for question {question_number}. URL: {image_url}")
+                else:
+                    print(f"No image found for question {question_number}")
                 current_content = [question_text]
             elif line.startswith(('A.', 'B.', 'C.', 'D.', 'E.')):  # 選項
                 if current_question:
@@ -180,10 +180,14 @@ def load_exam_content(exam_id):
                     # 如果這是最後一個選項，檢查是否有對應的圖片
                     if line.startswith('E.'):
                         image_path = os.path.join(base_dir, 'questions', year, 'image', f"{current_question['number']}.png")
+                        print(f"Checking for image: {image_path}")
                         if os.path.exists(image_path):
                             relative_path = os.path.join(year, 'image', f"{current_question['number']}.png")
-                            current_question['image'] = url_for('serve_questions', filename=relative_path, _external=True)
-                            print(f"Found image for question {current_question['number']}: {relative_path}")
+                            image_url = url_for('serve_questions', filename=relative_path, _external=True)
+                            current_question['image'] = image_url
+                            print(f"Found image for question {current_question['number']}. URL: {image_url}")
+                        else:
+                            print(f"No image found for question {current_question['number']}")
             elif line == '%':  # 答案分隔符
                 continue
             elif line in ['A', 'B', 'C', 'D', 'E']:  # 答案
@@ -198,10 +202,14 @@ def load_exam_content(exam_id):
                 current_question['content'] = '\n'.join(current_content)
             # 檢查最後一題是否有圖片
             image_path = os.path.join(base_dir, 'questions', year, 'image', f"{current_question['number']}.png")
+            print(f"Checking for image: {image_path}")
             if os.path.exists(image_path):
                 relative_path = os.path.join(year, 'image', f"{current_question['number']}.png")
-                current_question['image'] = url_for('serve_questions', filename=relative_path, _external=True)
-                print(f"Found image for question {current_question['number']}: {relative_path}")
+                image_url = url_for('serve_questions', filename=relative_path, _external=True)
+                current_question['image'] = image_url
+                print(f"Found image for question {current_question['number']}. URL: {image_url}")
+            else:
+                print(f"No image found for question {current_question['number']}")
             questions.append(current_question)
             
         print(f"Successfully processed {len(questions)} questions")
@@ -314,69 +322,26 @@ def load_exam_route(exam_id):
     print(f"User {session['username']} attempting to load exam {exam_id}")
     
     try:
-        # 解析年份和部分
-        year = exam_id.split('_')[0]
-        part = exam_id.split('_')[1]
+        # 使用 load_exam_content 函數載入考卷
+        exam_content = load_exam_content(exam_id)
         
-        # 構建文件路徑
-        exam_file = os.path.join('questions', year, f'{exam_id}.md')
-        
-        if not os.path.exists(exam_file):
-            return jsonify({'success': False, 'error': '找不到試卷文件'})
-        
-        # 使用 UTF-8 編碼讀取文件
-        with open(exam_file, 'r', encoding='utf-8') as f:
-            content = f.read()
-        
-        # 解析題目
-        questions = []
-        lines = content.split('\n')
-        current_question = None
-        
-        for i, line in enumerate(lines):
-            line = line.strip()
-            if not line:
-                continue
-                
-            # 新題目開始
-            if line.startswith('##'):
-                if current_question:
-                    questions.append(current_question)
-                current_question = {
-                    'content': line[line.find(' ', 2) + 1:],  # 移除題號
-                    'options': [],
-                    'image': None
-                }
-            # 題目內容
-            elif current_question is not None:
-                if line.startswith('!['):
-                    # 處理圖片
-                    image_path = line.split('(')[-1].split(')')[0]
-                    current_question['image'] = image_path
-                elif line.startswith(('A.', 'B.', 'C.', 'D.', 'E.')):
-                    # 處理選項
-                    option_content = line[2:].strip()  # 移除選項標記和空格
-                    current_question['options'].append(option_content)
-                elif not line.startswith('%'):  # 忽略答案標記
-                    # 處理題目文字（可能是多行的）
-                    if 'content' in current_question:
-                        current_question['content'] += '\n' + line
-        
-        # 添加最後一題
-        if current_question:
-            questions.append(current_question)
-        
-        if not questions:
-            return jsonify({'success': False, 'error': '試卷格式錯誤或內容為空'})
+        if exam_content is None:
+            return jsonify({
+                'success': False,
+                'error': '找不到試卷文件'
+            }), 404
             
         return jsonify({
             'success': True,
-            'questions': questions
+            'questions': exam_content['questions']
         })
         
     except Exception as e:
         print(f"Error loading exam: {str(e)}")
-        return jsonify({'success': False, 'error': str(e)})
+        return jsonify({
+            'success': False,
+            'error': f'載入試卷時發生錯誤：{str(e)}'
+        }), 500
 
 @app.route('/submit-exam', methods=['POST'])
 def submit_exam():
@@ -796,4 +761,4 @@ def internal_error(error):
     return render_template('500.html'), 500
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(host='0.0.0.0', port=5000)
