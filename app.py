@@ -1,17 +1,22 @@
-from flask import Flask, render_template, request, jsonify, session, redirect, url_for, send_from_directory, abort
+from flask import Flask, render_template, request, jsonify, session, redirect, url_for, send_from_directory, abort, send_file
 from flask_sqlalchemy import SQLAlchemy
+from flask_migrate import Migrate
 import os
 import json
 from datetime import datetime
 from functools import wraps
 import traceback
 from config import Config
+from docx import Document
+from docx.shared import Pt
+import io
 
 app = Flask(__name__)
 app.config.from_object(Config)
 
 # 初始化 SQL Database
 db = SQLAlchemy(app)
+migrate = Migrate(app, db)
 
 
 
@@ -29,7 +34,8 @@ class ExamRecord(db.Model):
     date = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
     score = db.Column(db.Float, nullable=False)
     answers = db.Column(db.JSON, nullable=False)  # 儲存用戶答案
-    confidence = db.Column(db.JSON, nullable=False)  # 儲存把握度
+    confidence = db.Column(db.JSON, nullable=True)  # 儲存把握度
+    exam_duration = db.Column(db.Integer, nullable=True)  # 儲存考試時間（秒）
     notes = db.relationship('Note', backref='exam_record', lazy=True)
 
     def to_dict(self):
@@ -39,7 +45,8 @@ class ExamRecord(db.Model):
             'date': self.date.strftime('%Y-%m-%d %H:%M:%S'),
             'score': self.score,
             'answers': self.answers,
-            'confidence': self.confidence
+            'confidence': self.confidence,
+            'exam_duration': self.exam_duration
         }
 
 class Note(db.Model):
@@ -64,6 +71,25 @@ class Note(db.Model):
             'content': self.content,
             'created_at': self.created_at.strftime('%Y-%m-%d %H:%M:%S'),
             'updated_at': self.updated_at.strftime('%Y-%m-%d %H:%M:%S')
+        }
+
+class Favorite(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    exam_id = db.Column(db.String(50), nullable=False)
+    question_number = db.Column(db.Integer, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    __table_args__ = (
+        db.UniqueConstraint('user_id', 'exam_id', 'question_number', name='unique_user_question_favorite'),
+    )
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'exam_id': self.exam_id,
+            'question_number': self.question_number,
+            'created_at': self.created_at.strftime('%Y-%m-%d %H:%M:%S')
         }
 
 # 只在首次運行時創建表
@@ -130,6 +156,15 @@ def load_exam_content(exam_id):
             print(f"Answers file not found: {answers_file}")
             return None
             
+        # 讀取答案文件
+        with open(answers_file, 'r', encoding='utf-8-sig') as f:
+            answers_content = f.read().strip().split('\n')
+            answers = []
+            for line in answers_content:
+                if line.strip() in ['A', 'B', 'C', 'D', 'E']:
+                    # 將答案轉換為數字索引 (A=0, B=1, C=2, D=3, E=4)
+                    answers.append(ord(line.strip()) - ord('A'))
+        
         # 使用 utf-8-sig 來處理可能的 BOM
         with open(questions_file, 'r', encoding='utf-8-sig') as f:
             content = f.read()
@@ -177,21 +212,6 @@ def load_exam_content(exam_id):
             elif line.startswith(('A.', 'B.', 'C.', 'D.', 'E.')):  # 選項
                 if current_question:
                     current_question['options'].append(line[2:].strip())
-                    # 如果這是最後一個選項，檢查是否有對應的圖片
-                    if line.startswith('E.'):
-                        image_path = os.path.join(base_dir, 'questions', year, 'image', f"{current_question['number']}.png")
-                        print(f"Checking for image: {image_path}")
-                        if os.path.exists(image_path):
-                            relative_path = os.path.join(year, 'image', f"{current_question['number']}.png")
-                            image_url = url_for('serve_questions', filename=relative_path, _external=True)
-                            current_question['image'] = image_url
-                            print(f"Found image for question {current_question['number']}. URL: {image_url}")
-                        else:
-                            print(f"No image found for question {current_question['number']}")
-            elif line == '%':  # 答案分隔符
-                continue
-            elif line in ['A', 'B', 'C', 'D', 'E']:  # 答案
-                continue
             else:
                 if current_question and not line.startswith('##'):
                     current_content.append(line)
@@ -200,21 +220,11 @@ def load_exam_content(exam_id):
         if current_question:
             if current_content:
                 current_question['content'] = '\n'.join(current_content)
-            # 檢查最後一題是否有圖片
-            image_path = os.path.join(base_dir, 'questions', year, 'image', f"{current_question['number']}.png")
-            print(f"Checking for image: {image_path}")
-            if os.path.exists(image_path):
-                relative_path = os.path.join(year, 'image', f"{current_question['number']}.png")
-                image_url = url_for('serve_questions', filename=relative_path, _external=True)
-                current_question['image'] = image_url
-                print(f"Found image for question {current_question['number']}. URL: {image_url}")
-            else:
-                print(f"No image found for question {current_question['number']}")
             questions.append(current_question)
             
-        print(f"Successfully processed {len(questions)} questions")
         return {
-            'questions': questions
+            'questions': questions,
+            'answers': answers
         }
         
     except Exception as e:
@@ -228,7 +238,7 @@ def convert_letter_to_index(letter):
     return mapping.get(letter.strip().upper())
 
 def calculate_score(exam_id, user_answers):
-    """計算考試分數"""
+    """計算考試分數並返回正確答案"""
     try:
         # 解析年份和部分
         year = exam_id.split('_')[0]
@@ -257,15 +267,30 @@ def calculate_score(exam_id, user_answers):
         
         # 計算分數
         score = 0
+        correct_question_numbers = []  # 記錄答對的題號
         for i, answer in enumerate(user_answers):
             if answer is not None and answer == correct_answers[i]:
                 score += 1.25
+                correct_question_numbers.append(str(i + 1))  # 題號從1開始
         
-        return score
+        return {
+            'score': score,
+            'correct_answers': correct_question_numbers
+        }
         
     except Exception as e:
         print(f"Error calculating score: {str(e)}")
         raise e
+
+# 從考試ID獲取考試標題
+def get_exam_title(exam_id):
+    try:
+        year = exam_id.split('_')[0]
+        part = '前80題' if exam_id.endswith('_1') else '後80題'
+        return f'{year}年度{part}'
+    except Exception as e:
+        print(f"Error generating exam title for {exam_id}: {str(e)}")
+        return exam_id
 
 @app.route('/')
 def index():
@@ -344,46 +369,73 @@ def load_exam_route(exam_id):
         }), 500
 
 @app.route('/submit-exam', methods=['POST'])
+@handle_errors
 def submit_exam():
     try:
-        if 'username' not in session:
-            return jsonify({'success': False, 'message': '請先登入'})
-
         data = request.get_json()
-        exam_id = data.get('exam_id')
+        print('Received exam data:', data)  # 添加日誌
+        
+        exam_id = data.get('examId')
         answers = data.get('answers')
         confidence = data.get('confidence')
-
-        if not all([exam_id, answers]):
-            return jsonify({'success': False, 'message': '缺少必要資料'})
-
-        # 獲取用戶
-        user = User.query.filter_by(username=session['username']).first()
-        if not user:
-            return jsonify({'success': False, 'message': '用戶不存在'})
-
+        exam_duration = data.get('examDuration', 0)  # 新增：接收考試時間
+        
+        print('Exam duration:', exam_duration)  # 添加日誌
+        
+        # 驗證必要參數
+        if not exam_id or not answers:
+            return jsonify({
+                'success': False,
+                'error': '缺少必要資料'
+            })
+            
         # 計算分數
-        score = calculate_score(exam_id, answers)
-
+        score_result = calculate_score(exam_id, answers)
+        score = score_result['score']
+        correct_answers = score_result['correct_answers']
+        
+        # 獲取當前用戶
+        username = session.get('username')
+        if not username:
+            return jsonify({
+                'success': False,
+                'error': '請先登入'
+            })
+            
+        user = User.query.filter_by(username=username).first()
+        if not user:
+            return jsonify({
+                'success': False,
+                'error': '用戶不存在'
+            })
+            
         # 創建考試記錄
-        record = ExamRecord(
+        exam_record = ExamRecord(
             user_id=user.id,
             exam_id=exam_id,
             score=score,
             answers=answers,
-            confidence=confidence or []
+            confidence=confidence,
+            exam_duration=exam_duration  # 新增：儲存考試時間
         )
-        db.session.add(record)
+        
+        db.session.add(exam_record)
         db.session.commit()
-
+        
+        print('Saved exam record with duration:', exam_record.exam_duration)  # 添加日誌
+        
         return jsonify({
             'success': True,
-            'record_id': record.id
+            'score': score,
+            'correct_answers': correct_answers,
+            'recordId': exam_record.id
         })
-
     except Exception as e:
-        print(f"Error in submit_exam: {str(e)}")
-        return jsonify({'success': False, 'message': str(e)})
+        print('Error in submit_exam:', str(e))  # 添加日誌
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        })
 
 @app.route('/score-result/<int:record_id>')
 def score_result(record_id):
@@ -451,11 +503,13 @@ def save_notes():
     try:
         data = request.get_json()
         record_id = data.get('record_id')
-        notes_data = data.get('notes', {})
-
-        if not record_id:
-            return jsonify({'success': False, 'message': '缺少考試記錄ID'})
-
+        notes_data = data.get('notes')
+        
+        print(f"record_id: {record_id}, notes_data: {notes_data}")  # 調試輸出
+        
+        if not record_id or notes_data is None:
+            return jsonify({'success': False, 'message': '缺少必要參數'})
+            
         user = User.query.filter_by(username=session['username']).first()
         if not user:
             return jsonify({'success': False, 'message': '用戶不存在'})
@@ -495,202 +549,455 @@ def get_exam_records():
         return jsonify({'success': False, 'error': '請先登入'})
 
     try:
-        # 獲取用戶ID
         user = User.query.filter_by(username=session['username']).first()
         if not user:
-            return jsonify({'success': False, 'error': '找不到用戶'})
+            return jsonify({'success': False, 'error': '找不到使用者'})
 
-        # 獲取用戶的所有考試記錄，按日期降序排序
+        # 獲取所有考試記錄並按考試ID分組
         records = ExamRecord.query.filter_by(user_id=user.id).order_by(ExamRecord.date.desc()).all()
-
-        # 將記錄按考試ID分組
         grouped_records = {}
+
         for record in records:
             exam_id = record.exam_id
-            year = exam_id.split('_')[0]
-            part = '前80題' if exam_id.endswith('_1') else '後80題'
-            exam_title = f'{year}年度{part}'
-
             if exam_id not in grouped_records:
                 grouped_records[exam_id] = {
-                    'exam_id': exam_id,
-                    'title': exam_title,
-                    'attempts': [],
-                    'highest_score': 0
+                    'title': get_exam_title(exam_id),
+                    'highest_score': record.score,
+                    'attempts': []
                 }
+            else:
+                if record.score > grouped_records[exam_id]['highest_score']:
+                    grouped_records[exam_id]['highest_score'] = record.score
 
-            # 添加本次嘗試記錄
+            # 計算各科答對率
+            subject_mapping = get_subject_mapping(exam_id)
+            answers = record.answers
+            score_result = calculate_score(exam_id, answers)
+            correct_answers = score_result['correct_answers']
+            
+            # 初始化各科統計，只包含這次考試有考的科別
+            subject_stats = {}
+            # 根據考試ID判斷題號範圍
+            start_question = 1 if exam_id.endswith('_1') else 81
+            end_question = 80 if exam_id.endswith('_1') else 160
+            
+            # 只處理該考卷範圍內的題目
+            for q_num in range(start_question, end_question + 1):
+                q_str = str(q_num)
+                if q_str in subject_mapping:  # 確保題號有對應的科別
+                    subject = subject_mapping[q_str]
+                    if subject not in subject_stats:
+                        subject_stats[subject] = {'correct': 0, 'total': 0}
+                    subject_stats[subject]['total'] += 1
+                    if q_str in correct_answers:
+                        subject_stats[subject]['correct'] += 1
+            
+            # 計算各科答對率，只包含有考的科別
+            subject_percentages = {}
+            for subject, stats in subject_stats.items():
+                if stats['total'] > 0:  # 只包含有考的科別
+                    subject_percentages[subject] = (stats['correct'] / stats['total']) * 100
+
+            # 添加考試記錄
             attempt = {
                 'record_id': record.id,
+                'date': record.date.strftime('%Y-%m-%d %H:%M:%S'),
                 'score': record.score,
-                'date': record.date.strftime('%Y-%m-%d %H:%M'),
-                'confidence_stats': {
-                    'high': sum(1 for c in record.confidence if c == 'high'),
-                    'medium': sum(1 for c in record.confidence if c == 'medium'),
-                    'low': sum(1 for c in record.confidence if c == 'low')
-                }
+                'exam_duration': record.exam_duration,
+                'subject_percentages': subject_percentages
             }
             grouped_records[exam_id]['attempts'].append(attempt)
 
-            # 更新最高分
-            if record.score > grouped_records[exam_id]['highest_score']:
-                grouped_records[exam_id]['highest_score'] = record.score
+        # 轉換為列表格式
+        records_list = []
+        for exam_id, data in grouped_records.items():
+            records_list.append({
+                'exam_id': exam_id,
+                'title': data['title'],
+                'highest_score': data['highest_score'],
+                'attempts': sorted(data['attempts'], key=lambda x: x['date'], reverse=True)
+            })
 
         return jsonify({
             'success': True,
-            'records': list(grouped_records.values())
+            'records': sorted(records_list, key=lambda x: x['exam_id'])
         })
-
     except Exception as e:
-        print("Error:", str(e))
+        print(f"Error in get_exam_records: {str(e)}")
+        print(traceback.format_exc())
         return jsonify({'success': False, 'error': str(e)})
 
 @app.route('/exam-detail/<int:record_id>')
 def exam_detail(record_id):
-    if 'username' not in session:
-        return redirect(url_for('login'))
-
-    user = User.query.filter_by(username=session['username']).first()
-    if not user:
-        abort(403)
-
-    record = ExamRecord.query.get_or_404(record_id)
-    if record.user_id != user.id:
-        abort(403)
-
+    """顯示考試詳細資訊的頁面"""
     try:
-        # 載入題目
-        questions = load_exam_content(record.exam_id)
-
-        # 解析年份和部分
-        year = record.exam_id.split('_')[0]
-        part = record.exam_id.split('_')[1]
-
-        # 構建答案文件路徑
-        answer_file = os.path.join(app.root_path, 'questions', year, f'{year}_{part}_answers.txt')
-
-        # 載入答案並轉換為索引
-        with open(answer_file, 'r', encoding='utf-8') as f:
-            correct_answers = []
-            for line in f:
-                letter = line.strip()
-                if letter:
-                    index = convert_letter_to_index(letter)
-                    if index is not None:
-                        correct_answers.append(index)
-
-        # 載入筆記
-        notes = {note.question_number: note.content for note in 
-                Note.query.filter_by(exam_record_id=record_id).all()}
-
-        # 載入其他用戶的筆記
-        other_notes = Note.query.join(ExamRecord).filter(
-            ExamRecord.exam_id == record.exam_id,
-            Note.user_id != user.id
-        ).all()
-
-        other_notes_by_question = {}
-        for note in other_notes:
-            if note.question_number not in other_notes_by_question:
-                other_notes_by_question[note.question_number] = []
-            note_dict = note.to_dict()
-            note_dict['username'] = User.query.get(note.user_id).username
-            other_notes_by_question[note.question_number].append(note_dict)
-
-        # 準備題目資料
-        questions_data = []
-        for i, question in enumerate(questions['questions']):
-            user_answer = record.answers[i]
-            correct_answer = correct_answers[i]
-            question_number = i + 1
-
-            options_data = []
-            for j, option in enumerate(question['options']):
-                options_data.append({
-                    'content': option,
-                    'is_user_answer': user_answer == j,
-                    'is_correct': correct_answer == j
-                })
-
-            questions_data.append({
-                'number': question_number,
-                'content': question['content'],
-                'image': question.get('image'),
-                'options': options_data,
-                'confidence': record.confidence[i],
-                'is_correct': user_answer == correct_answer,
-                'notes': notes.get(question_number, ''),
-                'other_notes': other_notes_by_question.get(question_number, [])
-            })
-
-        exam_year = record.exam_id.split('_')[0]
-        exam_part = '前80題' if record.exam_id.endswith('_1') else '後80題'
-        exam_title = f'{exam_year}年度{exam_part}'
-
+        if 'username' not in session:
+            return redirect(url_for('login'))
+            
+        # 檢查考試記錄是否存在
+        record = ExamRecord.query.get(record_id)
+        if not record:
+            flash('找不到考試記錄')
+            return redirect(url_for('dashboard'))
+            
+        # 檢查權限
+        current_user = User.query.filter_by(username=session['username']).first()
+        if record.user_id != current_user.id:
+            flash('沒有權限查看此考試記錄')
+            return redirect(url_for('dashboard'))
+            
         return render_template('exam_detail.html',
-                             exam_record=record,
-                             exam_title=exam_title,
-                             score=record.score,
-                             date=record.date.strftime('%Y-%m-%d %H:%M'),
-                             questions=questions_data)
-
+                             username=session['username'],
+                             record_id=record_id)
+                             
     except Exception as e:
-        print("錯誤詳情:", str(e))
-        import traceback
-        print("完整錯誤追蹤:", traceback.format_exc())
-        return render_template('error.html', error="載入考試詳情時發生錯誤")
+        print(f"Error in exam_detail: {str(e)}")
+        print(traceback.format_exc())
+        return render_template('exam_detail.html',
+                             username=session['username'],
+                             record_id=record_id,
+                             error="載入考試詳情時發生錯誤")
 
 @app.route('/api/save-notes', methods=['POST'])
 def save_notes_api():
+    """儲存筆記的API端點"""
     if 'username' not in session:
         return jsonify({'success': False, 'error': '請先登入'})
-
+        
     try:
         data = request.get_json()
+        print(f"Received notes data: {data}")  # 調試輸出
+        
+        if not data:
+            return jsonify({'success': False, 'error': '沒有收到數據'})
+            
         record_id = data.get('record_id')
-        notes_data = data.get('notes', {})
-
-        if not record_id:
-            return jsonify({'success': False, 'error': '缺少考試記錄ID'})
-
+        notes_data = data.get('notes')
+        
+        print(f"record_id: {record_id}, notes_data: {notes_data}")  # 調試輸出
+        
+        if not record_id or notes_data is None:
+            return jsonify({'success': False, 'error': '缺少必要參數'})
+            
         user = User.query.filter_by(username=session['username']).first()
         if not user:
-            return jsonify({'success': False, 'error': '找不到用戶'})
+            return jsonify({'success': False, 'error': '用戶不存在'})
 
         exam_record = ExamRecord.query.get(record_id)
         if not exam_record:
             return jsonify({'success': False, 'error': '考試記錄不存在'})
 
-        # 處理每一題的筆記
-        for question_num, content in notes_data.items():
-            if content.strip():  # 只保存非空筆記
-                # 檢查是否已有筆記
-                note = Note.query.filter_by(
-                    user_id=user.id,
+        # 檢查權限
+        user_id = User.query.filter_by(username=session['username']).first().id
+        if exam_record.user_id != user_id:
+            return jsonify({'success': False, 'error': '沒有權限'})
+            
+        # 更新或創建筆記
+        for question_number, content in notes_data.items():
+            # 如果 content 是字典，獲取其內容
+            if isinstance(content, dict):
+                content = content.get('content', '')
+            
+            # 查找現有筆記
+            note = Note.query.filter_by(
+                exam_record_id=record_id,
+                question_number=question_number
+            ).first()
+            
+            if note:
+                # 更新現有筆記
+                note.content = content
+                note.updated_at = datetime.utcnow()
+            else:
+                # 創建新筆記
+                note = Note(
+                    user_id=user_id,
                     exam_record_id=record_id,
-                    question_number=int(question_num)
-                ).first()
-
-                if note:
-                    # 更新現有筆記
-                    note.content = content.strip()
-                else:
-                    # 創建新筆記
-                    note = Note(
-                        user_id=user.id,
-                        exam_record_id=record_id,
-                        question_number=int(question_num),
-                        content=content.strip()
-                    )
-                    db.session.add(note)
-
+                    question_number=question_number,
+                    content=content
+                )
+                db.session.add(note)
+                
         db.session.commit()
         return jsonify({'success': True})
-
+        
     except Exception as e:
         db.session.rollback()
-        print(f"Error in save_notes: {str(e)}")
+        print(f"Error saving notes: {str(e)}")
+        print(traceback.format_exc())
         return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/api/get-exam-notes/<int:record_id>')
+def get_exam_notes_api(record_id):
+    """獲取考試筆記的API端點"""
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': '請先登入'})
+        
+    try:
+        # 獲取考試記錄
+        record = ExamRecord.query.get_or_404(record_id)
+        
+        # 檢查權限
+        if record.user_id != User.query.filter_by(username=session['username']).first().id:
+            return jsonify({'success': False, 'error': '沒有權限'})
+            
+        # 獲取所有筆記
+        notes = Note.query.filter_by(exam_record_id=record_id).all()
+        
+        # 將筆記組織成以題號為鍵的字典
+        notes_dict = {}
+        for note in notes:
+            if note.question_number not in notes_dict:
+                notes_dict[note.question_number] = []
+            notes_dict[note.question_number].append({
+                'content': note.content,
+                'created_at': note.created_at.strftime('%Y-%m-%d %H:%M:%S'),
+                'updated_at': note.updated_at.strftime('%Y-%m-%d %H:%M:%S')
+            })
+            
+        return jsonify({
+            'success': True,
+            'notes': notes_dict
+        })
+        
+    except Exception as e:
+        print(f"Error getting notes: {str(e)}")
+        print(traceback.format_exc())
+        return jsonify({'success': False, 'error': str(e)})
+
+def get_subject_mapping(exam_id):
+    """獲取題目對應的科別映射"""
+    try:
+        year = exam_id.split('_')[0]
+        
+        # 讀取 d1 和 d2 檔案
+        base_dir = os.path.dirname(__file__)
+        d1_file = os.path.join(base_dir, 'questions', year, f'{year}_d1.md')
+        d2_file = os.path.join(base_dir, 'questions', year, f'{year}_d2.md')
+        
+        print(f"Looking for d1 file: {d1_file}")
+        print(f"Looking for d2 file: {d2_file}")
+        
+        subject_mapping = {}
+        
+        # 處理 d1 檔案 (1-80題)
+        if os.path.exists(d1_file):
+            print(f"Found d1 file")
+            with open(d1_file, 'r', encoding='utf-8-sig') as f:
+                lines = f.readlines()
+                print(f"D1 content: {lines[:10]}")  # 顯示前10行
+                
+                # 每行對應一題
+                for i, line in enumerate(lines, start=1):
+                    subject = line.strip()
+                    if subject:  # 如果不是空行
+                        subject_mapping[str(i)] = subject
+                        print(f"Mapped question {i} to subject: {subject}")
+                    if i >= 80:  # 只處理到第80題
+                        break
+        
+        # 處理 d2 檔案 (81-160題)
+        if os.path.exists(d2_file):
+            print(f"Found d2 file")
+            with open(d2_file, 'r', encoding='utf-8-sig') as f:
+                lines = f.readlines()
+                print(f"D2 content: {lines[:10]}")  # 顯示前10行
+                
+                # 每行對應一題，從第81題開始
+                for i, line in enumerate(lines, start=81):
+                    subject = line.strip()
+                    if subject:  # 如果不是空行
+                        subject_mapping[str(i)] = subject
+                        print(f"Mapped question {i} to subject: {subject}")
+                    if i >= 160:  # 只處理到第160題
+                        break
+        
+        print(f"Final subject mapping: {subject_mapping}")
+        return subject_mapping
+        
+    except Exception as e:
+        print(f"Error in get_subject_mapping: {str(e)}")
+        print(traceback.format_exc())
+        return {}
+
+@app.route('/api/exam-detail/<int:record_id>')
+def get_exam_detail(record_id):
+    """獲取考試詳細資訊的API端點"""
+    try:
+        if 'username' not in session:
+            return jsonify({'success': False, 'error': '請先登入'})
+            
+        record = ExamRecord.query.get(record_id)
+        if not record:
+            return jsonify({'success': False, 'error': '找不到考試記錄'})
+            
+        # 檢查權限
+        current_user = User.query.filter_by(username=session['username']).first()
+        if record.user_id != current_user.id:
+            return jsonify({'success': False, 'error': '沒有權限查看此考試記錄'})
+            
+        # 載入考試內容
+        exam_content = load_exam_content(record.exam_id)
+        if not exam_content:
+            return jsonify({'success': False, 'error': '無法載入考試內容'})
+            
+        # 獲取考試科目映射
+        subjects = get_subject_mapping(record.exam_id)
+        print(f"Exam ID: {record.exam_id}")
+        print(f"Loaded subjects: {subjects}")  # 調試輸出
+        
+        # 解析用戶答案
+        user_answers = {}
+        try:
+            if isinstance(record.answers, str):
+                user_answers = json.loads(record.answers)
+            elif isinstance(record.answers, dict):
+                user_answers = record.answers
+            elif isinstance(record.answers, list):
+                user_answers = {str(i): ans for i, ans in enumerate(record.answers)}
+        except Exception as e:
+            print(f"Error parsing answers: {e}")
+            print(f"Original answers: {record.answers}")
+            
+        print(f"Parsed user answers: {user_answers}")  # 調試輸出
+        
+        # 解析信心程度
+        confidence_levels = {}
+        if record.confidence:
+            try:
+                if isinstance(record.confidence, str):
+                    confidence_levels = json.loads(record.confidence)
+                elif isinstance(record.confidence, dict):
+                    confidence_levels = record.confidence
+                elif isinstance(record.confidence, list):
+                    confidence_levels = {str(i): conf for i, conf in enumerate(record.confidence)}
+            except Exception as e:
+                print(f"Error parsing confidence: {e}")
+                confidence_levels = {}
+                
+        # 準備問題列表
+        questions = []
+        for i, question in enumerate(exam_content['questions']):
+            question_number = question['number']
+            correct_answer = exam_content['answers'][i] if i < len(exam_content['answers']) else None
+            
+            # 獲取用戶答案（嘗試多種可能的鍵）
+            user_answer = None
+            possible_keys = [str(i), str(question_number), i, question_number]
+            for key in possible_keys:
+                if str(key) in user_answers:
+                    user_answer = user_answers[str(key)]
+                    break
+                    
+            print(f"Question {question_number}: user_answer = {user_answer}, correct_answer = {correct_answer}")  # 調試輸出
+            
+            # 獲取信心程度
+            confidence = 'medium'  # 默認值
+            for key in possible_keys:
+                if str(key) in confidence_levels:
+                    confidence = confidence_levels[str(key)]
+                    break
+                    
+            # 獲取科目
+            subject = subjects.get(str(question_number), '未分類')
+            print(f"Question {question_number} subject: {subject}")  # 調試輸出
+            
+            question_data = {
+                'number': question_number,
+                'content': question['content'],
+                'options': question['options'],
+                'user_answer': user_answer,  # 用戶的答案
+                'correct_answer': correct_answer,  # 正確答案
+                'is_correct': user_answer == correct_answer if user_answer is not None else None,
+                'confidence': confidence,
+                'subject': subject,
+                'image': question.get('image')
+            }
+            questions.append(question_data)
+            
+        # 計算每科的正確率
+        subject_stats = {}
+        
+        # 先遍歷一次找出這份考卷實際包含的科目
+        actual_subjects = set()
+        for i, question in enumerate(exam_content['questions']):
+            question_number = question['number']
+            subject = subjects.get(str(question_number), '未分類')
+            actual_subjects.add(subject)
+        
+        # 只初始化實際出現的科目的統計資料
+        for subject in actual_subjects:
+            subject_stats[subject] = {
+                'total': 0,
+                'correct': 0
+            }
+        
+        # 統計每科的總題數和正確題數
+        for i, question in enumerate(exam_content['questions']):
+            question_number = question['number']
+            subject = subjects.get(str(question_number), '未分類')
+            subject_stats[subject]['total'] += 1
+            
+            correct_answer = exam_content['answers'][i] if i < len(exam_content['answers']) else None
+            user_answer = None
+            possible_keys = [str(i), str(question_number), i, question_number]
+            for key in possible_keys:
+                if str(key) in user_answers:
+                    user_answer = user_answers[str(key)]
+                    break
+            
+            if user_answer == correct_answer:
+                subject_stats[subject]['correct'] += 1
+        
+        # 計算每科的正確率
+        subject_percentages = {}
+        for subject, stats in subject_stats.items():
+            if stats['total'] > 0:
+                subject_percentages[subject] = round((stats['correct'] / stats['total']) * 100, 2)
+            else:
+                subject_percentages[subject] = 0
+
+        # 準備回應數據
+        return jsonify({
+            'success': True,
+            'exam_id': record.exam_id,  # 添加 exam_id
+            'questions': questions,
+            'subjects': list(actual_subjects),  # 只返回實際出現的科目
+            'subject_percentages': subject_percentages  # 只包含實際出現的科目的正確率
+        })
+        
+    except Exception as e:
+        print(f"Error in get_exam_detail: {str(e)}")
+        print(traceback.format_exc())
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/api/exam-records/<int:record_id>', methods=['DELETE'])
+@handle_errors
+def delete_exam_record(record_id):
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': '請先登入'}), 401
+
+    user = User.query.filter_by(username=session['username']).first()
+    if not user:
+        return jsonify({'success': False, 'error': '用戶不存在'}), 404
+
+    exam_record = ExamRecord.query.get(record_id)
+    if not exam_record:
+        return jsonify({'success': False, 'error': '考試紀錄不存在'}), 404
+
+    if exam_record.user_id != user.id:
+        return jsonify({'success': False, 'error': '無權限刪除此考試紀錄'}), 403
+
+    try:
+        # 刪除相關的筆記
+        Note.query.filter_by(exam_record_id=record_id).delete()
+        # 刪除考試紀錄
+        db.session.delete(exam_record)
+        db.session.commit()
+        return jsonify({'success': True})
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/questions/<path:filename>')
 @handle_errors
@@ -759,6 +1066,246 @@ def internal_error(error):
             'error': 'Internal server error'
         }), 500
     return render_template('500.html'), 500
+
+@app.route('/api/toggle-favorite', methods=['POST'])
+@handle_errors
+def toggle_favorite():
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': '請先登入'}), 401
+        
+    data = request.get_json()
+    exam_id = data.get('exam_id')
+    question_number = data.get('question_number')
+    
+    if not exam_id or not question_number:
+        return jsonify({'success': False, 'error': '缺少必要參數'}), 400
+        
+    user = User.query.filter_by(username=session['username']).first()
+    if not user:
+        return jsonify({'success': False, 'error': '用戶不存在'}), 404
+        
+    existing_favorite = Favorite.query.filter_by(
+        user_id=user.id,
+        exam_id=exam_id,
+        question_number=question_number
+    ).first()
+    
+    if existing_favorite:
+        db.session.delete(existing_favorite)
+        is_favorite = False
+    else:
+        new_favorite = Favorite(
+            user_id=user.id,
+            exam_id=exam_id,
+            question_number=question_number
+        )
+        db.session.add(new_favorite)
+        is_favorite = True
+        
+    db.session.commit()
+    return jsonify({
+        'success': True,
+        'is_favorite': is_favorite
+    })
+
+@app.route('/api/get-favorites/<exam_id>', methods=['GET'])
+@handle_errors
+def get_favorites(exam_id):
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': '請先登入'}), 401
+        
+    user = User.query.filter_by(username=session['username']).first()
+    if not user:
+        return jsonify({'success': False, 'error': '用戶不存在'}), 404
+        
+    from sqlalchemy import cast, Integer
+    # 按照題號排序（使用 cast 將字符串轉換為整數）
+    favorites = Favorite.query.filter_by(user_id=user.id).order_by(
+        cast(Favorite.question_number, Integer).asc()
+    ).all()
+    
+    return jsonify({
+        'success': True,
+        'favorites': [favorite.question_number for favorite in favorites]
+    })
+
+@app.route('/favorites')
+def favorites():
+    """顯示收藏題目的頁面"""
+    if 'username' not in session:
+        return redirect(url_for('index'))
+    return render_template('favorites.html')
+
+@app.route('/api/get-all-favorites')
+@handle_errors
+def get_all_favorites():
+    """獲取用戶所有收藏題目的 API"""
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': '請先登入'}), 401
+        
+    user = User.query.filter_by(username=session['username']).first()
+    if not user:
+        return jsonify({'success': False, 'error': '用戶不存在'}), 404
+        
+    favorites = Favorite.query.filter_by(user_id=user.id).order_by(Favorite.created_at.desc()).all()
+    
+    favorite_questions = []
+    for favorite in favorites:
+        try:
+            # 載入題目內容
+            exam_content = load_exam_content(favorite.exam_id)
+            if not exam_content or 'questions' not in exam_content or 'answers' not in exam_content:
+                continue
+                
+            # 找到對應的題目
+            question = None
+            correct_answer = None
+            
+            for idx, q in enumerate(exam_content['questions']):
+                if str(q['number']) == str(favorite.question_number):
+                    question = q
+                    # 使用相同索引獲取答案
+                    correct_answer = exam_content['answers'][idx]
+                    break
+                    
+            if not question or correct_answer is None:
+                continue
+                
+            question_data = {
+                'exam_id': favorite.exam_id,
+                'question_number': favorite.question_number,
+                'content': question['content'],
+                'options': question['options'],
+                'image': question.get('image'),
+                'correct_answer': correct_answer,
+                'created_at': favorite.created_at.strftime('%Y-%m-%d %H:%M:%S'),
+                'exam_title': get_exam_title(favorite.exam_id)
+            }
+            favorite_questions.append(question_data)
+        except Exception as e:
+            print(f"Error processing favorite {favorite.exam_id}-{favorite.question_number}: {str(e)}")
+            continue
+    
+    return jsonify({
+        'success': True,
+        'favorites': favorite_questions
+    })
+
+@app.route('/export_exam_word/<int:record_id>')
+def export_exam_word(record_id):
+    if 'username' not in session:
+        return redirect(url_for('login'))
+
+    # 獲取考試記錄
+    exam_record = ExamRecord.query.get_or_404(record_id)
+    if exam_record.user.username != session['username']:
+        abort(403)
+
+    # 獲取考試內容
+    exam_content = load_exam_content(exam_record.exam_id)
+    if not exam_content:
+        abort(404)
+
+    # 獲取筆記
+    notes = Note.query.filter_by(exam_record_id=record_id).all()
+    print(f"DEBUG: Found {len(notes)} notes for record_id {record_id}")
+    
+    # 確保 question_number 是整數類型
+    notes_dict = {}
+    for note in notes:
+        print(f"DEBUG: Processing note - question_number: {note.question_number}, content: {note.content}")
+        try:
+            # 將題號轉換為整數
+            q_num = int(note.question_number)
+            notes_dict[str(q_num)] = note.content
+            print(f"DEBUG: Added note for question {q_num}")
+        except (ValueError, TypeError) as e:
+            print(f"DEBUG: Error processing note {note.question_number}: {str(e)}")
+            continue
+    
+    print(f"DEBUG: Final notes dictionary: {notes_dict}")
+    
+    # 創建新的 Word 文件
+    doc = Document()
+    
+    # 設置標題
+    title = get_exam_title(exam_record.exam_id)
+    heading = doc.add_heading(title, 0)
+    heading.alignment = 1  # 置中對齊
+
+    # 添加考試資訊
+    doc.add_paragraph(f'考試日期：{exam_record.date.strftime("%Y-%m-%d %H:%M:%S")}')
+    doc.add_paragraph(f'得分：{exam_record.score}')
+    doc.add_paragraph(f'作答時間：{exam_record.exam_duration} 秒')
+    doc.add_paragraph('') # 空行
+
+    # 遍歷每個題目
+    for i, question in enumerate(exam_content['questions']):
+        # 題目編號和內容
+        q_num = str(question['number'])
+        print(f"DEBUG: Processing question {q_num}")
+        print(f"DEBUG: Question number type: {type(q_num)}")
+        print(f"DEBUG: Notes dict keys: {list(notes_dict.keys())}")
+        doc.add_paragraph(f'題目 {q_num}：{question["content"]}', style='List Number')
+        
+        # 選項
+        for j, option in enumerate(question['options']):
+            doc.add_paragraph(f'{chr(65+j)}. {option}')
+        
+        # 答案資訊
+        try:
+            if exam_record.answers and i < len(exam_record.answers):
+                answer_value = exam_record.answers[i]
+                if answer_value is not None and isinstance(answer_value, int) and 0 <= answer_value <= 4:
+                    user_answer = chr(65 + answer_value)
+                else:
+                    user_answer = '未作答'
+            else:
+                user_answer = '未作答'
+            
+            correct_answer = chr(65 + exam_content['answers'][i]) if i < len(exam_content['answers']) else '未知'
+        except (TypeError, IndexError, ValueError):
+            user_answer = '未作答'
+            correct_answer = '未知'
+        
+        p = doc.add_paragraph()
+        p.add_run('您的答案：').bold = True
+        p.add_run(f'{user_answer}    ')
+        p.add_run('正確答案：').bold = True
+        p.add_run(correct_answer)
+        
+        # 添加筆記（如果有）
+        print(f"DEBUG: Checking notes for question {q_num}")
+        print(f"DEBUG: Question number type: {type(q_num)}")
+        print(f"DEBUG: Notes dict keys: {notes_dict.keys()}")
+        if q_num in notes_dict:
+            print(f"DEBUG: Found note for question {q_num}: {notes_dict[q_num]}")
+            doc.add_paragraph('') # 空行
+            note_para = doc.add_paragraph()
+            note_para.style = 'Quote'  # 使用引用樣式
+            note_title = note_para.add_run('【筆記】\n')
+            note_title.bold = True
+            note_title.font.size = Pt(12)
+            note_content = note_para.add_run(notes_dict[q_num].strip())
+            note_content.font.size = Pt(11)
+        else:
+            print(f"DEBUG: No note found for question {q_num}")
+        
+        # 添加分隔線
+        doc.add_paragraph('_' * 50)
+        doc.add_paragraph('') # 空行
+
+    # 將文件保存到記憶體中
+    docx_file = io.BytesIO()
+    doc.save(docx_file)
+    docx_file.seek(0)
+    
+    return send_file(
+        docx_file,
+        mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        as_attachment=True,
+        download_name=f'{title}.docx'
+    )
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
