@@ -3,9 +3,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>考試詳情</title>
+    <title>考試詳細資訊</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         .notes-textarea {
             resize: vertical;
@@ -25,7 +26,6 @@
             border: 1px solid #dee2e6;
         }
         .option-user-answer {
-            background-color: #e3f2fd;  /* 使用者答案背景色 */
             border-color: #90caf9;
         }
         .option-correct {
@@ -45,148 +45,455 @@
             background-color: #4caf50;
             color: white;
         }
+        /* 收藏按鈕樣式 */
+        .favorite-btn {
+            background: none;
+            border: none;
+            color: #ffd700;
+            font-size: 1.2rem;
+            cursor: pointer;
+            padding: 0 10px;
+            transition: transform 0.2s;
+        }
+        .favorite-btn:hover {
+            transform: scale(1.1);
+        }
+        .favorite-btn.active {
+            color: #ffd700;
+        }
+        .favorite-btn:not(.active) {
+            color: #6c757d;
+        }
+        .radar-chart-container {
+            background-color: rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 20px;
+            width: 100%;
+            max-width: 700px;  
+            margin-left: auto;
+            margin-right: auto;
+            height: 400px;    
+        }
     </style>
 </head>
-<body>
+<body class="dark-theme">
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+        <div class="container">
+            <a class="navbar-brand" href="{{ url_for('index') }}">考古題平台</a>
+            <div class="d-flex align-items-center">
+                <span class="navbar-text me-3">歡迎, {{ session['username'] }}</span>
+                <a href="{{ url_for('index') }}" class="btn btn-outline-light me-2">返回首頁</a>
+                <a href="{{ url_for('logout') }}" class="btn btn-outline-light">登出</a>
+            </div>
+        </div>
+    </nav>
+
     <div class="container mt-4">
+        <!-- 添加雷達圖容器 -->
+        <div class="row mb-4">
+            <div class="col-md-8 mx-auto">  
+                <div class="card bg-dark text-light">
+                    <div class="card-body">
+                        <h5 class="card-title">各科正確率分析</h5>
+                        <div class="radar-chart-container">
+                            <canvas id="radarChart"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="row mb-4">
+            <div class="col-md-6">
+                <div class="card bg-dark text-light">
+                    <div class="card-body">
+                        <h5 class="card-title">科別篩選</h5>
+                        <select id="subjectFilter" class="form-select bg-dark text-light">
+                            <option value="all">全部科別</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card bg-dark text-light">
+                    <div class="card-body">
+                        <h5 class="card-title">答題狀態</h5>
+                        <select id="answerStatusFilter" class="form-select bg-dark text-light">
+                            <option value="all">全部題目</option>
+                            <option value="correct">答對題目</option>
+                            <option value="incorrect">答錯題目</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <div class="d-flex justify-content-between align-items-center mb-4">
-            <h2>{{ exam_title }}</h2>
+            <h2>考試詳細資訊</h2>
             <div>
-                <span class="h4 me-3">得分：{{ score }}</span>
-                <a href="/past_exams" class="btn btn-outline-primary">返回記錄</a>
+                <a href="{{ url_for('export_exam_word', record_id=record_id) }}" class="btn btn-primary">
+                    <i class="fas fa-file-word"></i> 匯出筆記到 Word
+                </a>
             </div>
         </div>
 
-        {% for question in questions %}
-        <div class="card mb-4">
-            <div class="card-header">
-                <div class="d-flex justify-content-between align-items-center">
-                    <h5 class="mb-0">第 {{ question.number }} 題</h5>
-                    <div>
-                        {% if question.confidence %}
-                        <span class="badge bg-{{ 'success' if question.confidence == 'high' else 'warning' if question.confidence == 'medium' else 'danger' }}">
-                            {{ '高' if question.confidence == 'high' else '中' if question.confidence == 'medium' else '低' }}把握度
-                        </span>
-                        {% endif %}
-                        <span class="badge bg-{{ 'success' if question.is_correct else 'danger' }} ms-2">
-                            {{ '正確' if question.is_correct else '錯誤' }}
-                        </span>
-                    </div>
-                </div>
-            </div>
-            <div class="card-body">
-                <p>{{ question.content }}</p>
-                {% if question.image %}
-                <img src="{{ url_for('static', filename=question.image) }}" class="img-fluid mb-3" alt="題目圖片">
-                {% endif %}
-                
-                <div class="options">
-                    {% for option in question.options %}
-                    <div class="option-item {{ 'option-user-answer' if option.is_user_answer }} {{ 'option-correct' if option.is_correct }}">
-                        {{ option.content }}
-                        {% if option.is_user_answer %}
-                        <span class="answer-badge user-answer-badge">您的答案</span>
-                        {% endif %}
-                        {% if option.is_correct %}
-                        <span class="answer-badge correct-answer-badge">正確答案</span>
-                        {% endif %}
-                    </div>
-                    {% endfor %}
-                </div>
-
-                <div class="notes-section">
-                    <h4>我的筆記</h4>
-                    <textarea class="form-control note-input" rows="3" 
-                              data-exam-record-id="{{ exam_record.id }}" 
-                              data-question-number="{{ loop.index }}"
-                              placeholder="在這裡輸入你的筆記..."></textarea>
-                    <div class="saving-indicator mt-2" id="saving-indicator-{{ loop.index }}">
-                        <small class="text-muted">正在儲存...</small>
-                    </div>
-                </div>
-            </div>
-        </div>
-        {% endfor %}
+        <div id="questionsList"></div>
     </div>
 
-    <script>
-        // 為每個筆記文本框添加自動保存功能
-        document.querySelectorAll('.note-input').forEach(textarea => {
-            let saveTimeout;
-            let lastContent = textarea.value;
-            const savingIndicator = document.getElementById(`saving-indicator-${textarea.dataset.questionNumber}`);
+    <template id="questionTemplate">
+        <div class="card bg-dark text-light mb-4 question-card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <div class="d-flex align-items-center">
+                    <h5 class="mb-0 me-3">第 <span class="question-number"></span> 題</h5>
+                    <button class="favorite-btn" title="收藏題目">★</button>
+                </div>
+                <span class="badge"></span>
+            </div>
+            <div class="card-body">
+                <div class="subject-tag mb-2"></div>
+                <div class="question-content mb-3"></div>
+                <div class="options-container mb-3"></div>
+                <div class="image-container mb-3 text-center"></div>
+                <div class="answer-info mb-3">
+                    <div class="user-answer"></div>
+                    <div class="correct-answer"></div>
+                    <div class="confidence-level"></div>
+                </div>
+                <div class="notes-section">
+                    <h5>筆記</h5>
+                    <div class="input-group">
+                        <textarea class="form-control bg-dark text-light note-input" 
+                                rows="3" 
+                                placeholder="在此輸入筆記..."
+                                data-record-id="{{ record_id }}"
+                                data-question-number="${question.number}"></textarea>
+                        <div class="saving-indicator" style="display: none;">
+                            <small class="text-muted">正在儲存...</small>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </template>
 
-            // 載入已有的筆記
-            const record_id = textarea.dataset.examRecordId;
-            const question_num = textarea.dataset.questionNumber;
-            
-            // 載入筆記
-            fetch(`/api/exam-notes/${record_id}`)
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        let examData = null;
+        let saveTimeouts = {};
+        const recordId = {{ record_id }};
+        let radarChart = null;
+        let favoriteQuestions = new Set();
+
+        function loadExamDetail() {
+            fetch(`/api/exam-detail/${recordId}`)
                 .then(response => response.json())
                 .then(data => {
-                    if (data.success && data.notes && data.notes[question_num]) {
-                        const notes = data.notes[question_num];
-                        if (notes.length > 0) {
-                            textarea.value = notes[0].content;
-                            lastContent = notes[0].content;
-                        }
+                    if (data.success) {
+                        examData = data;
+                        console.log('Loaded exam data:', examData);  // 調試輸出
+                        
+                        const subjectFilter = document.getElementById('subjectFilter');
+                        data.subjects.forEach(subject => {
+                            const option = document.createElement('option');
+                            option.value = subject;
+                            option.textContent = subject;
+                            subjectFilter.appendChild(option);
+                        });
+                        
+                        // 載入收藏的題目
+                        return fetch(`/api/get-favorites/${data.exam_id}`);
+                    } else {
+                        throw new Error(data.error || '載入考試詳細資訊失敗');
+                    }
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        favoriteQuestions = new Set(data.favorites);
+                        filterQuestions();
+                        createRadarChart(examData.subject_percentages);
+                        return fetch(`/api/get-exam-notes/${recordId}`);
+                    }
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        document.querySelectorAll('.note-input').forEach(textarea => {
+                            const questionNumber = textarea.dataset.questionNumber;
+                            if (data.notes && data.notes[questionNumber]) {
+                                textarea.value = data.notes[questionNumber][0].content;
+                            }
+                        });
                     }
                 })
                 .catch(error => {
-                    console.error('載入筆記失敗:', error);
+                    console.error('Error:', error);
+                    alert('載入資料時發生錯誤');
                 });
+        }
 
-            textarea.addEventListener('input', function() {
-                // 如果內容沒有變化，不需要保存
-                if (this.value === lastContent) return;
-                
-                // 清除之前的計時器
-                if (saveTimeout) clearTimeout(saveTimeout);
-                
-                // 顯示儲存指示器
-                savingIndicator.style.display = 'block';
-                
-                // 設置新的計時器
-                saveTimeout = setTimeout(() => {
-                    const content = this.value.trim();
-                    if (content === lastContent) {
-                        savingIndicator.style.display = 'none';
-                        return;
+        function toggleFavorite(questionNumber) {
+            if (!examData) {
+                console.error('Exam data not loaded yet');
+                return;
+            }
+            
+            console.log('Toggling favorite for question:', questionNumber, 'exam_id:', examData.exam_id);
+            
+            fetch('/api/toggle-favorite', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    exam_id: examData.exam_id,
+                    question_number: questionNumber
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    // 使用 exam_id 和 question_number 的組合來找到正確的按鈕
+                    const questionCard = document.querySelector(`.question-card[data-exam-id="${examData.exam_id}"][data-question-number="${questionNumber}"]`);
+                    if (questionCard) {
+                        const btn = questionCard.querySelector('.favorite-btn');
+                        if (data.is_favorite) {
+                            favoriteQuestions.add(`${examData.exam_id}_${questionNumber}`);
+                            btn.classList.add('active');
+                        } else {
+                            favoriteQuestions.delete(`${examData.exam_id}_${questionNumber}`);
+                            btn.classList.remove('active');
+                        }
+                    }
+                } else {
+                    throw new Error(data.error || '操作失敗');
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('操作失敗：' + error.message);
+            });
+        }
+
+        function createRadarChart(subjectPercentages) {
+            const ctx = document.getElementById('radarChart').getContext('2d');
+            
+            if (radarChart) {
+                radarChart.destroy();
+            }
+
+            const subjects = Object.keys(subjectPercentages);
+            const percentages = Object.values(subjectPercentages);
+
+            radarChart = new Chart(ctx, {
+                type: 'radar',
+                data: {
+                    labels: subjects,
+                    datasets: [{
+                        label: '各科正確率 (%)',
+                        data: percentages,
+                        backgroundColor: 'rgba(54, 162, 235, 0.3)',  
+                        borderColor: 'rgba(54, 162, 235, 1)',
+                        borderWidth: 3,  
+                        pointBackgroundColor: 'rgba(54, 162, 235, 1)',
+                        pointBorderColor: '#fff',
+                        pointHoverBackgroundColor: '#fff',
+                        pointHoverBorderColor: 'rgba(54, 162, 235, 1)',
+                        pointRadius: 5,  
+                        pointHoverRadius: 7  
+                    }]
+                },
+                options: {
+                    scales: {
+                        r: {
+                            beginAtZero: true,
+                            max: 100,
+                            ticks: {
+                                stepSize: 20,
+                                color: 'rgba(255, 255, 255, 0.7)',
+                                font: {
+                                    size: 12
+                                }
+                            },
+                            grid: {
+                                color: 'rgba(255, 255, 255, 0.2)',  
+                                lineWidth: 1
+                            },
+                            angleLines: {
+                                color: 'rgba(255, 255, 255, 0.2)',  
+                                lineWidth: 1
+                            },
+                            pointLabels: {
+                                color: 'rgba(255, 255, 255, 0.9)',
+                                font: {
+                                    size: 14,  
+                                    weight: 'bold'  
+                                }
+                            }
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            labels: {
+                                color: 'rgba(255, 255, 255, 0.9)',
+                                font: {
+                                    size: 14,  
+                                    weight: 'bold'
+                                }
+                            }
+                        }
+                    },
+                    maintainAspectRatio: false  
+                }
+            });
+        }
+
+        function setupNotesAutoSave() {
+            document.addEventListener('input', function(e) {
+                if (e.target.classList.contains('note-input')) {
+                    const textarea = e.target;
+                    const questionNumber = textarea.dataset.questionNumber;
+                    const savingIndicator = textarea.parentElement.querySelector('.saving-indicator');
+                    
+                    if (saveTimeouts[questionNumber]) {
+                        clearTimeout(saveTimeouts[questionNumber]);
                     }
                     
-                    lastContent = content;
+                    savingIndicator.style.display = 'block';
                     
-                    // 準備筆記數據
-                    const notes = {};
-                    notes[question_num] = content;
-
-                    fetch('/api/save-notes', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                        },
-                        body: JSON.stringify({
-                            record_id: record_id,
-                            notes: notes
+                    saveTimeouts[questionNumber] = setTimeout(() => {
+                        console.log('Saving note for question:', questionNumber, 'content:', textarea.value);
+                        
+                        fetch('/api/save-notes', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                            },
+                            body: JSON.stringify({
+                                record_id: recordId,
+                                notes: {
+                                    [questionNumber]: textarea.value
+                                }
+                            })
                         })
-                    })
-                    .then(response => response.json())
-                    .then(data => {
-                        savingIndicator.style.display = 'none';
-                        if (data.success) {
-                            console.log('筆記已儲存');
-                        } else {
-                            console.error('儲存失敗:', data.message);
-                            alert('儲存失敗: ' + data.message);
-                        }
-                    })
-                    .catch(error => {
-                        savingIndicator.style.display = 'none';
-                        console.error('Error:', error);
-                        alert('儲存時發生錯誤');
-                    });
-                }, 1000);  // 延遲1秒再保存
+                        .then(response => response.json())
+                        .then(data => {
+                            savingIndicator.style.display = 'none';
+                            if (!data.success) {
+                                console.error('儲存失敗:', data.error);
+                                alert('儲存失敗: ' + data.error);
+                            } else {
+                                console.log('Successfully saved note for question:', questionNumber);
+                            }
+                        })
+                        .catch(error => {
+                            savingIndicator.style.display = 'none';
+                            console.error('Error:', error);
+                            alert('儲存時發生錯誤');
+                        });
+                    }, 1000); 
+                }
             });
+        }
+
+        function filterQuestions() {
+            const subjectFilter = document.getElementById('subjectFilter').value;
+            const answerStatusFilter = document.getElementById('answerStatusFilter').value;
+            const questionsList = document.getElementById('questionsList');
+            questionsList.innerHTML = '';
+
+            if (!examData) return;
+
+            examData.questions.forEach((question, index) => {
+                if (
+                    (subjectFilter === 'all' || question.subject === subjectFilter) &&
+                    (answerStatusFilter === 'all' ||
+                        (answerStatusFilter === 'correct' && question.is_correct) ||
+                        (answerStatusFilter === 'incorrect' && !question.is_correct))
+                ) {
+                    const template = document.getElementById('questionTemplate');
+                    const clone = template.content.cloneNode(true);
+                    const card = clone.querySelector('.card');
+                    
+                    // 添加 data 屬性來唯一標識題目
+                    card.dataset.examId = examData.exam_id;
+                    card.dataset.questionNumber = question.number;
+                    
+                    card.querySelector('.question-number').textContent = question.number;
+                    
+                    // 設置收藏按鈕狀態
+                    const favoriteBtn = card.querySelector('.favorite-btn');
+                    if (favoriteQuestions.has(`${examData.exam_id}_${question.number}`)) {
+                        favoriteBtn.classList.add('active');
+                    }
+                    favoriteBtn.addEventListener('click', () => toggleFavorite(question.number));
+                    
+                    // 其他原有的程式碼
+                    const badge = card.querySelector('.badge');
+                    badge.textContent = question.is_correct ? '答對' : '答錯';
+                    badge.classList.add(question.is_correct ? 'bg-success' : 'bg-danger');
+                    
+                    const subjectTag = card.querySelector('.subject-tag');
+                    subjectTag.textContent = question.subject;
+                    subjectTag.classList.add('badge', 'bg-info', 'mb-2');
+                    
+                    const content = card.querySelector('.question-content');
+                    content.textContent = question.content;
+                    
+                    const optionsContainer = card.querySelector('.options-container');
+                    question.options.forEach((option, index) => {
+                        const optionDiv = document.createElement('div');
+                        optionDiv.className = 'option-item';
+                        if (index === question.user_answer) optionDiv.classList.add('option-user-answer');
+                        if (index === question.correct_answer) optionDiv.classList.add('option-correct');
+                        
+                        optionDiv.textContent = `${String.fromCharCode(65 + index)}. ${option}`;
+                        
+                        if (index === question.user_answer) {
+                            const badge = document.createElement('span');
+                            badge.className = 'answer-badge user-answer-badge';
+                            badge.textContent = '你的答案';
+                            optionDiv.appendChild(badge);
+                        }
+                        if (index === question.correct_answer) {
+                            const badge = document.createElement('span');
+                            badge.className = 'answer-badge correct-answer-badge';
+                            badge.textContent = '正確答案';
+                            optionDiv.appendChild(badge);
+                        }
+                        
+                        optionsContainer.appendChild(optionDiv);
+                    });
+                    
+                    if (question.image) {
+                        const imageContainer = card.querySelector('.image-container');
+                        const img = document.createElement('img');
+                        img.src = question.image;
+                        img.className = 'img-fluid';
+                        img.style.maxHeight = '300px';
+                        imageContainer.appendChild(img);
+                    }
+                    
+                    const confidenceLevel = card.querySelector('.confidence-level');
+                    if (question.confidence !== undefined) {
+                        confidenceLevel.textContent = `把握度：${question.confidence}%`;
+                    }
+                    
+                    const textarea = card.querySelector('.note-input');
+                    textarea.dataset.questionNumber = question.number;
+                    
+                    questionsList.appendChild(clone);
+                }
+            });
+        }
+
+        document.getElementById('subjectFilter').addEventListener('change', filterQuestions);
+        document.getElementById('answerStatusFilter').addEventListener('change', filterQuestions);
+
+        document.addEventListener('DOMContentLoaded', function() {
+            loadExamDetail();
+            setupNotesAutoSave();
         });
     </script>
 </body>
