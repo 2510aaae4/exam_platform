@@ -37,6 +37,39 @@ let currentExam = null;
 let currentQuestion = 0;
 let userAnswers = [];
 let userConfidence = [];
+let startTime = null;
+let timerInterval = null;
+let examDuration = 0;
+
+// 開始計時器
+function startTimer() {
+    startTime = new Date();
+    timerInterval = setInterval(updateTimer, 1000);
+}
+
+// 更新計時器顯示
+function updateTimer() {
+    if (!startTime) return;
+    
+    const now = new Date();
+    const diff = Math.floor((now - startTime) / 1000);
+    examDuration = diff;
+    
+    const hours = Math.floor(diff / 3600);
+    const minutes = Math.floor((diff % 3600) / 60);
+    const seconds = diff % 60;
+    
+    const timerDisplay = document.getElementById('timer');
+    timerDisplay.textContent = `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+}
+
+// 停止計時器
+function stopTimer() {
+    if (timerInterval) {
+        clearInterval(timerInterval);
+        timerInterval = null;
+    }
+}
 
 function selectExam(examId) {
     console.log(`Attempting to load exam: ${examId}`);
@@ -46,6 +79,12 @@ function selectExam(examId) {
     currentQuestion = 0;
     userAnswers = [];
     userConfidence = [];
+    
+    // 重置計時器
+    if (timerInterval) {
+        stopTimer();
+    }
+    startTimer();
     
     // 清除顯示
     document.getElementById('questionContent').innerHTML = '';
@@ -245,26 +284,31 @@ function updateConfidenceButtons() {
 
 function submitExam() {
     if (!currentExam) {
-        alert('沒有選擇試卷');
+        alert('請先選擇試卷');
         return;
     }
 
-    // 檢查是否所有題目都已作答
-    const unansweredQuestions = userAnswers.reduce((acc, ans, idx) => {
-        if (ans === null) acc.push(idx + 1);
-        return acc;
-    }, []);
-
+    // 檢查是否有未作答的題目
+    const unansweredQuestions = userAnswers.map((ans, idx) => ans === null ? idx + 1 : null).filter(q => q !== null);
     if (unansweredQuestions.length > 0) {
-        const confirm = window.confirm(`第 ${unansweredQuestions.join(', ')} 題尚未作答，確定要提交嗎？`);
-        if (!confirm) return;
+        const confirm = window.confirm(`第 ${unansweredQuestions.join(', ')} 題尚未作答，確定要交卷嗎？`);
+        if (!confirm) {
+            return;
+        }
     }
 
+    // 停止計時器
+    stopTimer();
+
+    // 準備提交數據
     const data = {
-        exam_id: currentExam.id,
+        examId: currentExam.id,
         answers: userAnswers,
-        confidence: userConfidence
+        confidence: userConfidence.length > 0 ? userConfidence : null,  // 如果沒有設置把握度，傳送 null
+        examDuration: examDuration
     };
+
+    console.log('Submitting exam data:', data);  
 
     fetch('/submit-exam', {
         method: 'POST',
@@ -275,15 +319,19 @@ function submitExam() {
     })
     .then(response => response.json())
     .then(data => {
+        console.log('Server response:', data);  
         if (data.success) {
-            const recordId = data.record_id;
-            window.location.href = `/score-result/${recordId}`;
+            window.location.href = `/score-result/${data.recordId}`;
         } else {
-            alert('提交失敗：' + (data.message || '未知錯誤'));
+            alert('提交失敗：' + (data.error || '未知錯誤'));
+            // 如果提交失敗，繼續計時
+            startTimer();
         }
     })
     .catch(error => {
         console.error('Error:', error);
         alert('提交時發生錯誤');
+        // 如果提交失敗，繼續計時
+        startTimer();
     });
 }
