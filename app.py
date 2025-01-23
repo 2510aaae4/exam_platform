@@ -394,14 +394,20 @@ def submit_exam():
         
         # 獲取當前用戶
         username = session.get('username')
+        print(f'Current username from session: {username}')  # 添加日誌
+        
         if not username:
+            print('No username found in session')  # 添加日誌
             return jsonify({
                 'success': False,
                 'error': '請先登入'
             })
             
         user = User.query.filter_by(username=username).first()
+        print(f'User query result: {user}')  # 添加日誌
+        
         if not user:
+            print(f'User not found for username: {username}')  # 添加日誌
             return jsonify({
                 'success': False,
                 'error': '用戶不存在'
