@@ -20,7 +20,7 @@ migrate = Migrate(app, db)
 
 
 
-# 数据库模型
+# 資料庫模型
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(80), unique=True, nullable=False)
@@ -95,25 +95,28 @@ class Favorite(db.Model):
 # 只在首次運行時創建表
 with app.app_context():
     try:
-        # 刪除所有表並重新創建
-        db.drop_all()
-        db.create_all()
-        print("Database tables dropped and recreated successfully")
-        
-        # 從 allowed_users.txt 讀取並創建用戶
-        with open('allowed_users.txt', 'r') as f:
-            allowed_users = f.read().splitlines()
-            for username in allowed_users:
-                if username.strip():
-                    user = User(username=username.strip())
-                    db.session.add(user)
-            db.session.commit()
-        print("Initial users created successfully")
+        # 嘗試查詢用戶表
+        try:
+            User.query.first()
+        except:
+            # 如果查詢失敗，表示表不存在，創建所有表
+            db.create_all()
+            print("Database tables created successfully")
+            
+            # 從 allowed_users.txt 讀取並創建用戶
+            with open('allowed_users.txt', 'r') as f:
+                allowed_users = f.read().splitlines()
+                for username in allowed_users:
+                    if username.strip():
+                        user = User(username=username.strip())
+                        db.session.add(user)
+                db.session.commit()
+            print("Initial users created successfully")
     except Exception as e:
         print(f"Error initializing database: {str(e)}")
         print(traceback.format_exc())
 
-# 验证用户是否存在
+# 驗證用戶是否存在
 def validate_user(username):
     with open('allowed_users.txt', 'r') as f:
         allowed_users = f.read().splitlines()
@@ -1345,6 +1348,41 @@ def admin_exam_list():
         ])
     
     return jsonify(exam_list)
+
+@app.route('/api/exam_notes/<exam_id>/<int:question_number>')
+def get_question_notes(exam_id, question_number):
+    if 'username' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
+        
+    try:
+        user = User.query.filter_by(username=session['username']).first()
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+
+        # 找到該用戶對應考試的所有記錄
+        exam_records = ExamRecord.query.filter_by(
+            user_id=user.id,
+            exam_id=exam_id
+        ).all()
+
+        # 收集所有筆記
+        notes = []
+        for record in exam_records:
+            note = Note.query.filter_by(
+                exam_record_id=record.id,
+                question_number=question_number
+            ).first()
+            if note:
+                notes.append(note.to_dict())
+
+        return jsonify({
+            'success': True,
+            'notes': notes
+        })
+
+    except Exception as e:
+        print(f"Error getting notes: {str(e)}")
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
