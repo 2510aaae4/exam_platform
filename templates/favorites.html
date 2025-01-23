@@ -73,6 +73,48 @@
         .show-answer-btn.showing:hover {
             background-color: #d32f2f;
         }
+        .notes-section {
+            display: none;
+            padding: 10px;
+            margin-top: 10px;
+            background-color: rgba(33, 150, 243, 0.1);
+            border-radius: 4px;
+            border: 1px solid #2196f3;
+            transition: all 0.3s ease;
+        }
+        .notes-section.show {
+            display: block;
+            animation: slideDown 0.3s ease;
+        }
+        @keyframes slideDown {
+            from {
+                opacity: 0;
+                transform: translateY(-10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        .show-notes-btn {
+            background-color: #9c27b0;
+            border: none;
+            color: white;
+            padding: 5px 15px;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: background-color 0.2s;
+            margin-left: 10px;
+        }
+        .show-notes-btn:hover {
+            background-color: #7b1fa2;
+        }
+        .show-notes-btn.showing {
+            background-color: #e91e63;
+        }
+        .show-notes-btn.showing:hover {
+            background-color: #c2185b;
+        }
     </style>
 </head>
 <body class="dark-theme">
@@ -126,13 +168,23 @@
                     </div>
                     <div class="d-flex align-items-center">
                         <button class="show-answer-btn me-3">顯示答案</button>
+                        <button class="show-notes-btn me-3">顯示筆記</button>
                         <div class="exam-info"></div>
                     </div>
                 </div>
                 <div class="card-body">
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <div class="exam-info">
+                            <span>考試：<span class="exam-id"></span></span>
+                            <span class="ms-3">題號：<span class="question-number"></span></span>
+                        </div>
+                    </div>
                     <div class="question-content mb-3"></div>
                     <div class="options-container mb-3"></div>
                     <div class="image-container mb-3 text-center"></div>
+                    <div class="notes-section" data-exam-id="<span class="exam-id"></span>" data-question-number="<span class="question-number"></span>">
+                        <div class="notes-content">載入中...</div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -205,6 +257,7 @@
                 card.dataset.questionNumber = question.question_number;
                 
                 card.querySelector('.question-number').textContent = question.question_number;
+                card.querySelector('.exam-id').textContent = question.exam_id;
                 card.querySelector('.exam-info').textContent = `${question.exam_title} | 收藏時間：${question.created_at}`;
                 
                 const content = card.querySelector('.question-content');
@@ -256,6 +309,12 @@
                     });
                 });
                 
+                // 添加顯示筆記按鈕功能
+                const showNotesBtn = card.querySelector('.show-notes-btn');
+                showNotesBtn.addEventListener('click', () => {
+                    toggleNotes(showNotesBtn, question.exam_id, question.question_number);
+                });
+                
                 // 添加取消收藏按鈕功能
                 const favoriteBtn = card.querySelector('.favorite-btn');
                 favoriteBtn.addEventListener('click', () => {
@@ -303,27 +362,92 @@
 
         // 添加顯示/隱藏所有答案的功能
         document.getElementById('toggleAllAnswers').addEventListener('click', function() {
-            showingAllAnswers = !showingAllAnswers;
-            this.textContent = showingAllAnswers ? '隱藏所有答案' : '顯示所有答案';
+            const btn = this;
+            const showingAnswers = btn.classList.contains('showing');
+            const allAnswerBtns = document.querySelectorAll('.show-answer-btn');
             
-            const options = document.querySelectorAll('.option-item');
-            const badges = document.querySelectorAll('.correct-answer-badge');
-            
-            options.forEach(option => {
-                option.classList.toggle('hidden-answer', !showingAllAnswers);
-            });
-            badges.forEach(badge => {
-                badge.classList.toggle('hidden-answer', !showingAllAnswers);
-            });
-            
-            const showAnswerBtns = document.querySelectorAll('.show-answer-btn');
-            showAnswerBtns.forEach(btn => {
-                if (btn.id !== 'toggleAllAnswers') {
-                    btn.textContent = showingAllAnswers ? '隱藏答案' : '顯示答案';
-                    btn.classList.toggle('showing', showingAllAnswers);
+            allAnswerBtns.forEach(answerBtn => {
+                if (showingAnswers) {
+                    hideAnswer(answerBtn);
+                } else {
+                    showAnswer(answerBtn);
                 }
             });
+            
+            btn.textContent = showingAnswers ? '顯示全部答案' : '隱藏全部答案';
+            btn.classList.toggle('showing');
         });
+
+        async function toggleNotes(btn, examId, questionNumber) {
+            const card = btn.closest('.card');
+            const notesSection = card.querySelector('.notes-section');
+            
+            if (btn.classList.contains('showing')) {
+                // 隱藏筆記
+                notesSection.classList.remove('show');
+                btn.textContent = '顯示筆記';
+                btn.classList.remove('showing');
+            } else {
+                // 顯示筆記
+                try {
+                    const response = await fetch(`/api/exam_notes/${examId}/${questionNumber}`);
+                    if (!response.ok) throw new Error('Failed to fetch notes');
+                    const data = await response.json();
+                    
+                    const notesContent = notesSection.querySelector('.notes-content');
+                    if (data.notes && data.notes.length > 0) {
+                        notesContent.innerHTML = data.notes[0].content.replace(/\n/g, '<br>');
+                    } else {
+                        notesContent.innerHTML = '尚無筆記';
+                    }
+                    
+                    notesSection.classList.add('show');
+                    btn.textContent = '隱藏筆記';
+                    btn.classList.add('showing');
+                } catch (error) {
+                    console.error('Error fetching notes:', error);
+                    alert('無法載入筆記');
+                }
+            }
+        }
+
+        function showAnswer(btn) {
+            const card = btn.closest('.card');
+            const options = card.querySelectorAll('.option-item');
+            const badges = card.querySelectorAll('.correct-answer-badge');
+            
+            options.forEach(option => {
+                if (option.classList.contains('option-correct')) {
+                    option.classList.remove('hidden-answer');
+                }
+            });
+            
+            badges.forEach(badge => {
+                badge.classList.remove('hidden-answer');
+            });
+            
+            btn.textContent = '隱藏答案';
+            btn.classList.add('showing');
+        }
+
+        function hideAnswer(btn) {
+            const card = btn.closest('.card');
+            const options = card.querySelectorAll('.option-item');
+            const badges = card.querySelectorAll('.correct-answer-badge');
+            
+            options.forEach(option => {
+                if (option.classList.contains('option-correct')) {
+                    option.classList.add('hidden-answer');
+                }
+            });
+            
+            badges.forEach(badge => {
+                badge.classList.add('hidden-answer');
+            });
+            
+            btn.textContent = '顯示答案';
+            btn.classList.remove('showing');
+        }
 
         // 頁面載入時載入收藏題目
         document.addEventListener('DOMContentLoaded', loadFavorites);
