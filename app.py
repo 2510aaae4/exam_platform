@@ -294,34 +294,29 @@ def get_exam_title(exam_id):
 
 @app.route('/')
 def index():
+    if not session.get('username'):
+        return render_template('login.html')
+    if session.get('is_admin'):
+        return render_template('admin_index.html')
     return render_template('index.html')
 
 @app.route('/login', methods=['POST'])
 def login():
-    try:
-        username = request.form.get('username')
-        if not username:
-            return jsonify({'success': False, 'message': '請輸入用戶名'})
-            
-        if validate_user(username):
-            session['username'] = username
-            # 檢查用戶是否存在，如果不存在則創建
-            user = User.query.filter_by(username=username).first()
-            if not user:
-                try:
-                    user = User(username=username)
-                    db.session.add(user)
-                    db.session.commit()
-                    print(f"Created new user: {username}")
-                except Exception as e:
-                    db.session.rollback()
-                    print(f"Error creating user: {str(e)}")
-                    return jsonify({'success': False, 'message': '創建用戶時發生錯誤'})
-            return jsonify({'success': True})
-        return jsonify({'success': False, 'message': '無效的用戶名'})
-    except Exception as e:
-        print(f"Login error: {str(e)}")
-        return jsonify({'success': False, 'message': '登入時發生錯誤'})
+    username = request.form.get('username')
+    if not username:
+        return jsonify({'success': False, 'message': '請輸入用戶名'})
+    
+    if username == 'admin_107492':
+        session['username'] = username
+        session['is_admin'] = True
+        return jsonify({'success': True, 'is_admin': True})
+    
+    if validate_user(username):
+        session['username'] = username
+        session['is_admin'] = False
+        return jsonify({'success': True, 'is_admin': False})
+    
+    return jsonify({'success': False, 'message': '無效的用戶名'})
 
 @app.route('/simulation')
 def simulation():
@@ -1306,6 +1301,50 @@ def export_exam_word(record_id):
         as_attachment=True,
         download_name=f'{title}.docx'
     )
+
+@app.route('/admin/exam_info/<exam_id>')
+def admin_exam_info(exam_id):
+    if not session.get('is_admin'):
+        abort(403)
+    
+    exam_content = load_exam_content(exam_id)
+    if not exam_content:
+        abort(404)
+    
+    # 獲取所有用戶對這份考卷的筆記
+    notes = Note.query.join(ExamRecord).filter(
+        ExamRecord.exam_id == exam_id
+    ).all()
+    
+    notes_by_question = {}
+    for note in notes:
+        if note.question_number not in notes_by_question:
+            notes_by_question[note.question_number] = []
+        notes_by_question[note.question_number].append({
+            'username': note.user.username,
+            'content': note.content,
+            'created_at': note.created_at.strftime('%Y-%m-%d %H:%M:%S')
+        })
+    
+    return jsonify({
+        'exam_content': exam_content,
+        'notes': notes_by_question
+    })
+
+@app.route('/admin/exam_list')
+def admin_exam_list():
+    if not session.get('is_admin'):
+        abort(403)
+    
+    exam_years = ['110', '111', '112', '113']
+    exam_list = []
+    for year in exam_years:
+        exam_list.extend([
+            {'id': f'{year}_1', 'name': f'{year}年度前80題'},
+            {'id': f'{year}_2', 'name': f'{year}年度後80題'}
+        ])
+    
+    return jsonify(exam_list)
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
