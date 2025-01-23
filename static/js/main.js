@@ -1,19 +1,20 @@
 // 登入功能
 function login() {
     const username = document.getElementById('username').value;
-    const formData = new FormData();
-    formData.append('username', username);
     
     fetch('/login', {
         method: 'POST',
-        body: formData
+        headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: `username=${encodeURIComponent(username)}`
     })
     .then(response => response.json())
     .then(data => {
         if (data.success) {
-            window.location.reload();
+            window.location.href = '/';
         } else {
-            alert('登入失敗：' + data.message);
+            alert(data.message || '登入失敗');
         }
     })
     .catch(error => {
