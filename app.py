@@ -315,6 +315,14 @@ def login():
         return jsonify({'success': True, 'is_admin': True})
     
     if validate_user(username):
+        # 檢查用戶是否存在於資料庫中，如果不存在則創建
+        user = User.query.filter_by(username=username).first()
+        if not user:
+            user = User(username=username)
+            db.session.add(user)
+            db.session.commit()
+            print(f'Created new user in database: {username}')
+        
         session['username'] = username
         session['is_admin'] = False
         return jsonify({'success': True, 'is_admin': False})
