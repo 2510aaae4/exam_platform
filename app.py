@@ -306,26 +306,44 @@ def index():
 @app.route('/login', methods=['POST'])
 def login():
     username = request.form.get('username')
+    print(f'Login attempt for username: {username}')  # 添加日誌
+    
     if not username:
         return jsonify({'success': False, 'message': '請輸入用戶名'})
     
     if username == 'admin_107492':
         session['username'] = username
         session['is_admin'] = True
+        print(f'Admin login successful: {username}')  # 添加日誌
         return jsonify({'success': True, 'is_admin': True})
     
     if validate_user(username):
-        # 檢查用戶是否存在於資料庫中，如果不存在則創建
-        user = User.query.filter_by(username=username).first()
-        if not user:
-            user = User(username=username)
-            db.session.add(user)
-            db.session.commit()
-            print(f'Created new user in database: {username}')
-        
-        session['username'] = username
-        session['is_admin'] = False
-        return jsonify({'success': True, 'is_admin': False})
+        try:
+            # 檢查用戶是否存在於資料庫中，如果不存在則創建
+            user = User.query.filter_by(username=username).first()
+            print(f'Existing user check result: {user}')  # 添加日誌
+            
+            if not user:
+                print(f'Creating new user: {username}')  # 添加日誌
+                user = User(username=username)
+                db.session.add(user)
+                db.session.commit()
+                print(f'Created new user in database: {username}')
+                
+                # 驗證用戶是否真的被創建
+                user = User.query.filter_by(username=username).first()
+                print(f'Verification of created user: {user}')  # 添加日誌
+            
+            session['username'] = username
+            session['is_admin'] = False
+            print(f'Login successful: {username}')  # 添加日誌
+            return jsonify({'success': True, 'is_admin': False})
+            
+        except Exception as e:
+            print(f'Error during user creation/login: {str(e)}')  # 添加錯誤日誌
+            print(traceback.format_exc())  # 添加詳細的錯誤追踪
+            db.session.rollback()
+            return jsonify({'success': False, 'message': '登入過程中發生錯誤'})
     
     return jsonify({'success': False, 'message': '無效的用戶名'})
 
@@ -378,75 +396,86 @@ def load_exam_route(exam_id):
 @handle_errors
 def submit_exam():
     try:
+        # 獲取考試數據
         data = request.get_json()
-        print('Received exam data:', data)  # 添加日誌
-        
         exam_id = data.get('examId')
-        answers = data.get('answers')
-        confidence = data.get('confidence')
-        exam_duration = data.get('examDuration', 0)  # 新增：接收考試時間
-        
-        print('Exam duration:', exam_duration)  # 添加日誌
-        
-        # 驗證必要參數
-        if not exam_id or not answers:
-            return jsonify({
-                'success': False,
-                'error': '缺少必要資料'
-            })
-            
-        # 計算分數
+        answers = data.get('answers', {})
+        confidence = data.get('confidence', {})
+        exam_duration = data.get('examDuration')
+
         score_result = calculate_score(exam_id, answers)
         score = score_result['score']
         correct_answers = score_result['correct_answers']
         
         # 獲取當前用戶
         username = session.get('username')
-        print(f'Current username from session: {username}')  # 添加日誌
+        print(f'Submit exam - Current username from session: {username}')  # 添加日誌
         
         if not username:
-            print('No username found in session')  # 添加日誌
+            print('Submit exam - No username in session')  # 添加日誌
             return jsonify({
                 'success': False,
                 'error': '請先登入'
             })
-            
-        user = User.query.filter_by(username=username).first()
-        print(f'User query result: {user}')  # 添加日誌
         
-        if not user:
-            print(f'User not found for username: {username}')  # 添加日誌
+        try:    
+            user = User.query.filter_by(username=username).first()
+            print(f'Submit exam - User query result: {user}')  # 添加日誌
+            
+            if not user:
+                print(f'Submit exam - User not found in database: {username}')  # 添加日誌
+                # 嘗試重新創建用戶
+                user = User(username=username)
+                db.session.add(user)
+                db.session.commit()
+                print(f'Submit exam - Created new user: {username}')  # 添加日誌
+                
+                # 再次驗證用戶創建
+                user = User.query.filter_by(username=username).first()
+                if not user:
+                    print(f'Submit exam - Failed to create user: {username}')  # 添加日誌
+                    return jsonify({
+                        'success': False,
+                        'error': '創建用戶失敗'
+                    })
+            
+            # 創建考試記錄
+            exam_record = ExamRecord(
+                user_id=user.id,
+                exam_id=exam_id,
+                score=score,
+                answers=answers,
+                confidence=confidence,
+                exam_duration=exam_duration
+            )
+            
+            db.session.add(exam_record)
+            db.session.commit()
+            
+            print(f'Submit exam - Successfully saved exam record for user: {username}')  # 添加日誌
+            
             return jsonify({
-                'success': False,
-                'error': '用戶不存在'
+                'success': True,
+                'score': score,
+                'correct_answers': correct_answers,
+                'recordId': exam_record.id
             })
             
-        # 創建考試記錄
-        exam_record = ExamRecord(
-            user_id=user.id,
-            exam_id=exam_id,
-            score=score,
-            answers=answers,
-            confidence=confidence,
-            exam_duration=exam_duration  # 新增：儲存考試時間
-        )
-        
-        db.session.add(exam_record)
-        db.session.commit()
-        
-        print('Saved exam record with duration:', exam_record.exam_duration)  # 添加日誌
-        
-        return jsonify({
-            'success': True,
-            'score': score,
-            'correct_answers': correct_answers,
-            'recordId': exam_record.id
-        })
+        except Exception as e:
+            print(f'Submit exam - Database error: {str(e)}')  # 添加錯誤日誌
+            print(traceback.format_exc())  # 添加詳細的錯誤追踪
+            db.session.rollback()
+            return jsonify({
+                'success': False,
+                'error': '保存考試記錄時發生錯誤'
+            })
+            
     except Exception as e:
-        print('Error in submit_exam:', str(e))  # 添加日誌
+        print(f'Submit exam - General error: {str(e)}')  # 添加錯誤日誌
+        print(traceback.format_exc())  # 添加詳細的錯誤追踪
         return jsonify({
             'success': False,
-            'error': str(e)
+            'error': '提交考試時發生錯誤'
         })
 
 @app.route('/score-result/<int:record_id>')
